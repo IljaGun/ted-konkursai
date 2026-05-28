@@ -1,17 +1,15 @@
 import requests
 import anthropic
-import gspread
-from google.oauth2.service_account import Credentials
-from datetime import datetime, timedelta
-import json
+import csv
 import os
 import time
+import json
+from datetime import datetime, timedelta
 
 # --- KONFIGURACIJA ---
 TED_API_KEY = os.environ['TED_API_KEY']
 ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
-GOOGLE_CREDENTIALS = json.loads(os.environ['GOOGLE_CREDENTIALS'])
-SPREADSHEET_ID = os.environ['SPREADSHEET_ID']
+RESULTS_FILE = 'results.csv'
 
 CPV_CODES = [
     '44210000', '44212000', '44212100', '44212300', '44212400',
@@ -41,8 +39,7 @@ REJECT if:
 """
 
 def get_ted_notices():
-    query_parts = [f'PC={code}' for code in CPV_CODES]
-    query = ' OR '.join(query_parts)
+    query = ' OR '.join([f'PC={code}' for code in CPV_CODES])
     yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
     today = datetime.now().strftime('%Y%m%d')
     headers = {
@@ -50,7 +47,7 @@ def get_ted_notices():
         'Content-Type': 'application/json'
     }
     body = {
-        'query': query,
+        'query': f'({query}) AND PD=[{yesterday},{today}]',
         'fields': [
             'BT-821-Lot',
             'organisation-country-buyer',
@@ -64,14 +61,15 @@ def get_ted_notices():
         'onlyLatestVersions': True
     }
     try:
-        response = requests.post(
+        r = requests.post(
             'https://api.ted.europa.eu/v3/notices/search',
             headers=headers, json=body, timeout=30
         )
-        if response.status_code == 200:
-            return response.json().get('notices', [])
+        if r.status_code == 200:
+            return r.json().get('notices', [])
+        print(f'TED API klaida: {r.status_code} {r.text[:200]}')
     except Exception as e:
-        print(f'TED API klaida: {e}')
+        print(f'TED API exception: {e}')
     return []
 
 def get_notice_xml(publication_number):
@@ -81,81 +79,74 @@ def get_notice_xml(publication_number):
     }
     try:
         url = f'https://ted.europa.eu/udl?uri=TED:NOTICE:{publication_number}:DATA:EN:XML'
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            return response.text[:4000]
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            return r.text[:4000]
     except Exception as e:
         print(f'XML klaida {publication_number}: {e}')
     return ''
 
 def analyze_with_ai(notice, xml_content=''):
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    pub_number = notice.get('publication-number', 'N/A')
+    pub = notice.get('publication-number', 'N/A')
     links = notice.get('links', {})
-    html_url = links.get('html', {}).get('ENG', f'https://ted.europa.eu/en/notice/-/detail/{pub_number}')
-
+    url = links.get('html', {}).get('ENG', f'https://ted.europa.eu/en/notice/-/detail/{pub}')
     content = f"""
-Publication: {pub_number}
-URL: {html_url}
-Notice data: {json.dumps(notice, indent=2)[:500]}
-XML excerpt: {xml_content[:2000] if xml_content else 'Not available'}
+Publication: {pub}
+URL: {url}
+Notice data: {json.dumps(notice)[:500]}
+XML: {xml_content[:2000]}
 """
-
-    message = client.messages.create(
+    msg = client.messages.create(
         model='claude-haiku-4-5-20251001',
         max_tokens=300,
         messages=[{
             'role': 'user',
             'content': f"""{COMPANY_PROFILE}
 
-Analyze this tender. Respond ONLY in this exact format:
+Analyze this tender. Respond ONLY:
 DECISION: YES or NO
 REASON: (one sentence)
-VALUE: (EUR amount or UNKNOWN)
-COUNTRY: (country name)
-TITLE: (tender title or description)
-URL: {html_url}
+VALUE: (EUR or UNKNOWN)
+COUNTRY: (country)
+TITLE: (title)
+URL: {url}
 
-Tender data:
+Tender:
 {content}"""
         }]
     )
-    return message.content[0].text, html_url
+    return msg.content[0].text, url
 
-def save_to_sheets(results):
-    scope = [
-        'https://spreadsheets.google.com/feeds',
-        'https://www.googleapis.com/auth/drive'
-    ]
-    creds = Credentials.from_service_account_info(GOOGLE_CREDENTIALS, scopes=scope)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-    today = datetime.now().strftime('%Y-%m-%d')
-    for r in results:
-        sheet.append_row([
-            today,
-            r['publication_number'],
-            r['title'],
-            r['country'],
-            r['value'],
-            r['reason'],
-            r['url']
-        ])
-    print(f'Issaugota {len(results)} irasu i Google Sheets')
+def save_results(results):
+    file_exists = os.path.isfile(RESULTS_FILE)
+    with open(RESULTS_FILE, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(['Date', 'Publication', 'Title', 'Country', 'Value', 'Reason', 'URL'])
+        for r in results:
+            writer.writerow([
+                datetime.now().strftime('%Y-%m-%d'),
+                r['publication_number'],
+                r['title'],
+                r['country'],
+                r['value'],
+                r['reason'],
+                r['url']
+            ])
+    print(f'Issaugota {len(results)} irasu i {RESULTS_FILE}')
 
 def main():
-    print(f'Pradedama TED konkursu paieska: {datetime.now()}')
+    print(f'Pradedama: {datetime.now()}')
     notices = get_ted_notices()
-    print(f'Rasta {len(notices)} konkursu')
+    print(f'Rasta {len(notices)} nauju konkursu')
 
     yes_results = []
-
     for i, notice in enumerate(notices):
         pub = notice.get('publication-number', 'N/A')
         print(f'{i+1}/{len(notices)}: {pub}')
         xml = get_notice_xml(pub)
         ai_response, url = analyze_with_ai(notice, xml)
-
         if 'DECISION: YES' in ai_response:
             lines = ai_response.split('\n')
             yes_results.append({
@@ -169,12 +160,11 @@ def main():
             print(f'  -> TINKA')
         else:
             print(f'  -> Netinka')
-
         time.sleep(0.3)
 
-    print(f'\nTinkamu konkursu: {len(yes_results)}')
+    print(f'Tinkamu: {len(yes_results)}')
     if yes_results:
-        save_to_sheets(yes_results)
+        save_results(yes_results)
     print('Baigta.')
 
 if __name__ == '__main__':
