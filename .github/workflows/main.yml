@@ -1,0 +1,37 @@
+name: TED Konkursai
+
+on:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-filter:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: pip install requests anthropic
+
+    - name: Run TED filter
+      env:
+        TED_API_KEY: ${{ secrets.TED_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: python ted_filter.py
+
+    - name: Save results
+      run: |
+        git config user.email "action@github.com"
+        git config user.name "GitHub Action"
+        git add results.csv
+        git diff --staged --quiet || git commit -m "TED rezultatai $(date +%Y-%m-%d)"
+        git push
