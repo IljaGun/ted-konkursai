@@ -4,6 +4,7 @@ import csv
 import os
 import time
 import json
+import re
 from datetime import datetime, timedelta
 
 # --- KONFIGURACIJA ---
@@ -11,20 +12,13 @@ TED_API_KEY = os.environ['TED_API_KEY']
 ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
 RESULTS_FILE = 'results.csv'
 
-# Tik tikslūs plieno konstrukcijų / laivų / platformų CPV kodai
 CPV_CODES = [
-    # Plieno konstrukcijos ir jų dalys
     '44210000', '44211000', '44212000', '44212100', '44212300', '44212400',
-    # Laivai, pontonai, platformos
     '34510000', '34512000', '34513000', '34513200', '34513400',
     '34514000', '34515000', '34520000', '34521000', '34521400',
-    # Rampos, pandusai
     '34931100', '34931200', '34931300', '34953000', '34953100',
-    # Tilto/perėjos konstrukcijos
     '45221100', '45221110', '45221111', '45221112', '45221113',
-    # Rezervuarai, cisternos
     '44611000', '44611200', '44611400', '44611600',
-    # Platformų/konstrukcijų montažas (tiekimas su montažu)
     '45223100', '45223110', '45223200', '45223210', '45223220',
 ]
 
@@ -39,13 +33,13 @@ Steel fabrication company in Kaunas, Lithuania.
 - Subcontracting of steel fabrication work is preferred
 
 REJECT IMMEDIATELY if ANY of these apply:
-- Notice type is Result/Award (contract already awarded - too late)
-- Notice type is Planning/Prior information only (not yet a real tender)
+- Notice type is Result/Award (contract already awarded)
+- Notice type is Planning/Prior information only
 - Notice type is Consultation/Market engagement
 - Requires on-site construction or installation work at the project location
-- Aluminium, stainless steel, galvanized only, or non-carbon-steel materials
+- Aluminium, stainless steel, or non-carbon-steel materials required
 - Standard catalogue products (containers, prefab boxes, standard shelving)
-- Contract value below 100,000 EUR or clearly micro-scale
+- Contract value clearly below 100,000 EUR
 - Design-only or engineering services without manufacturing
 - Supply from stock / trading / distribution only
 - Rental or hire of equipment
@@ -79,7 +73,8 @@ def get_ted_notices():
             'organisation-country-buyer',
             'tendering-party-name',
             'result-framework-maximum-value-cur-notice',
-            'BT-13(t)-Part'
+            'BT-13(t)-Part',
+            'BT-21-Procedure'
         ],
         'limit': 100,
         'page': 1,
@@ -98,30 +93,32 @@ def get_ted_notices():
         print(f'TED API exception: {e}')
     return []
 
-def get_notice_xml(publication_number):
+def get_notice_content(publication_number):
     headers = {
-        'Authorization': f'Bearer {TED_API_KEY}',
-        'User-Agent': 'Mozilla/5.0 (compatible; TED-Monitor/1.0)'
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     try:
-        url = f'https://ted.europa.eu/udl?uri=TED:NOTICE:{publication_number}:DATA:EN:XML'
+        url = f'https://ted.europa.eu/en/notice/{publication_number}/html'
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
-            return r.text[:4000]
+            clean = re.sub(r'<[^>]+>', ' ', r.text)
+            clean = re.sub(r'\s+', ' ', clean).strip()
+            return clean[:4000]
+        print(f'HTML klaida {publication_number}: {r.status_code}')
     except Exception as e:
-        print(f'XML klaida {publication_number}: {e}')
+        print(f'Content klaida {publication_number}: {e}')
     return ''
 
-def analyze_with_ai(notice, xml_content=''):
+def analyze_with_ai(notice, content=''):
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     pub = notice.get('publication-number', 'N/A')
     links = notice.get('links', {})
-    url = links.get('html', {}).get('ENG', f'https://ted.europa.eu/en/notice/-/detail/{pub}')
-    content = f"""
+    url = links.get('html', {}).get('ENG', f'https://ted.europa.eu/en/notice/{pub}/html')
+    full_content = f"""
 Publication: {pub}
 URL: {url}
-Notice data: {json.dumps(notice)[:800]}
-XML: {xml_content[:2000]}
+Notice JSON: {json.dumps(notice)[:800]}
+Notice full text: {content}
 """
     msg = client.messages.create(
         model='claude-haiku-4-5-20251001',
@@ -140,7 +137,7 @@ TITLE: (short tender title)
 URL: {url}
 
 Tender data:
-{content}"""
+{full_content}"""
         }]
     )
     return msg.content[0].text, url
@@ -172,8 +169,12 @@ def main():
     for i, notice in enumerate(notices):
         pub = notice.get('publication-number', 'N/A')
         print(f'{i+1}/{len(notices)}: {pub}')
-        xml = get_notice_xml(pub)
-        ai_response, url = analyze_with_ai(notice, xml)
+        content = get_notice_content(pub)
+        if content:
+            print(f'  Turinys: {len(content)} simboliu')
+        else:
+            print(f'  Turinys: TUSCIAS')
+        ai_response, url = analyze_with_ai(notice, content)
         if 'DECISION: YES' in ai_response:
             lines = ai_response.split('\n')
             yes_results.append({
@@ -184,11 +185,11 @@ def main():
                 'reason': next((l.replace('REASON:', '').strip() for l in lines if l.startswith('REASON:')), 'N/A'),
                 'url': url
             })
-            print(f'  -> TINKA: {ai_response[:80]}')
+            print(f'  -> TINKA')
         else:
             reason_line = next((l for l in ai_response.split('\n') if l.startswith('REASON:')), '')
             print(f'  -> Netinka: {reason_line}')
-        time.sleep(0.3)
+        time.sleep(0.5)
 
     print(f'Tinkamu: {len(yes_results)}')
     if yes_results:
