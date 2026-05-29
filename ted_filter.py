@@ -47,7 +47,7 @@ def get_ted_notices():
         'Content-Type': 'application/json'
     }
     body = {
-        'query': f'({query}) AND PD=[{yesterday},{today}]',
+        'query': f'({query}) AND PD>={yesterday} AND PD<={today}',
         'fields': [
             'BT-821-Lot',
             'organisation-country-buyer',
