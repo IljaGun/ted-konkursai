@@ -97,16 +97,23 @@ def get_notice_content(publication_number):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    try:
-        url = f'https://ted.europa.eu/en/notice/{publication_number}/html'
-        r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code == 200:
-            clean = re.sub(r'<[^>]+>', ' ', r.text)
-            clean = re.sub(r'\s+', ' ', clean).strip()
-            return clean[:4000]
-        print(f'HTML klaida {publication_number}: {r.status_code}')
-    except Exception as e:
-        print(f'Content klaida {publication_number}: {e}')
+    url = f'https://ted.europa.eu/en/notice/{publication_number}/html'
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            if r.status_code == 200:
+                clean = re.sub(r'<[^>]+>', ' ', r.text)
+                clean = re.sub(r'\s+', ' ', clean).strip()
+                return clean[:4000]
+            elif r.status_code == 202:
+                time.sleep(3)  # palaukti ir bandyti dar kartą
+                continue
+            else:
+                print(f'HTML klaida {publication_number}: {r.status_code}')
+                break
+        except Exception as e:
+            print(f'Content klaida {publication_number}: {e}')
+            break
     return ''
 
 def analyze_with_ai(notice, content=''):
