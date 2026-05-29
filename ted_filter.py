@@ -11,44 +11,70 @@ TED_API_KEY = os.environ['TED_API_KEY']
 ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
 RESULTS_FILE = 'results.csv'
 
+# Tik tikslūs plieno konstrukcijų / laivų / platformų CPV kodai
 CPV_CODES = [
-    '44210000', '44212000', '44212100', '44212300', '44212400',
+    # Plieno konstrukcijos ir jų dalys
+    '44210000', '44211000', '44212000', '44212100', '44212300', '44212400',
+    # Laivai, pontonai, platformos
     '34510000', '34512000', '34513000', '34513200', '34513400',
     '34514000', '34515000', '34520000', '34521000', '34521400',
+    # Rampos, pandusai
     '34931100', '34931200', '34931300', '34953000', '34953100',
-    '43320000', '43321000', '44200000', '44211000',
-    '44316400', '44316500', '44615000', '44615100'
+    # Tilto/perėjos konstrukcijos
+    '45221100', '45221110', '45221111', '45221112', '45221113',
+    # Rezervuarai, cisternos
+    '44611000', '44611200', '44611400', '44611600',
+    # Platformų/konstrukcijų montažas (tiekimas su montažu)
+    '45223100', '45223110', '45223200', '45223210', '45223220',
 ]
 
 COMPANY_PROFILE = """
 Steel fabrication company in Kaunas, Lithuania.
-- Manufactures NON-STANDARD steel structures (black steel only)
-- Products: pontoons, bridges, platforms, gangways, ramps, reservoirs
+- Manufactures NON-STANDARD steel structures (black steel / carbon steel ONLY)
+- Products: pontoons, floating platforms, bridges, walkways, gangways, ramps, steel reservoirs, steel tanks, steel platforms, mezzanines
 - Standards: EN 1090-1/2/3 or EN ISO 3834-2
 - Minimum contract value: 100,000 EUR
-- Can DELIVER anywhere in Europe, NO on-site installation
-- Subcontracting preferred
+- Can DELIVER anywhere in Europe
+- NO on-site installation capability
+- Subcontracting of steel fabrication work is preferred
 
-REJECT if:
-- Requires on-site installation at location
-- Aluminium, stainless steel, or non-black-steel materials
-- Standard catalogue products (containers, boxes)
-- Contract value below 100,000 EUR
-- Design-only without manufacturing
-- Supply from stock / trading only
+REJECT IMMEDIATELY if ANY of these apply:
+- Notice type is Result/Award (contract already awarded - too late)
+- Notice type is Planning/Prior information only (not yet a real tender)
+- Notice type is Consultation/Market engagement
+- Requires on-site construction or installation work at the project location
+- Aluminium, stainless steel, galvanized only, or non-carbon-steel materials
+- Standard catalogue products (containers, prefab boxes, standard shelving)
+- Contract value below 100,000 EUR or clearly micro-scale
+- Design-only or engineering services without manufacturing
+- Supply from stock / trading / distribution only
+- Rental or hire of equipment
+- Chemical reagents, paints, hardware supplies, tools
+- Windows, doors, lifts, elevators, HVAC, electrical, plumbing
+- Building construction or renovation works
+- Medical, laboratory, or scientific equipment
+
+ACCEPT only if ALL of these are true:
+- Active Competition/Contract notice (open tender, not yet awarded)
+- Requires manufacturing or fabrication of custom steel structures
+- Products match: pontoons, platforms, bridges, gangways, ramps, tanks, reservoirs, steel walkways, steel mezzanines, structural steel assemblies
+- Delivery of fabricated product is sufficient (no installation required OR installation is optional/subcontractable)
+- Contract value >= 100,000 EUR or unknown/not specified
 """
 
 def get_ted_notices():
     query = ' OR '.join([f'PC={code}' for code in CPV_CODES])
-    yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y%m%d')
-    today = datetime.now().strftime('%Y%m%d')
+    date_from = (datetime.now() - timedelta(days=2)).strftime('%Y%m%d')
+    date_to = datetime.now().strftime('%Y%m%d')
     headers = {
         'Authorization': f'Bearer {TED_API_KEY}',
         'Content-Type': 'application/json'
     }
     body = {
-        'query': f'({query}) AND PD>={yesterday} AND PD<={today}',
+        'query': f'({query}) AND PD>={date_from} AND PD<={date_to}',
         'fields': [
+            'publication-number',
+            'notice-type',
             'BT-821-Lot',
             'organisation-country-buyer',
             'tendering-party-name',
@@ -94,7 +120,7 @@ def analyze_with_ai(notice, xml_content=''):
     content = f"""
 Publication: {pub}
 URL: {url}
-Notice data: {json.dumps(notice)[:500]}
+Notice data: {json.dumps(notice)[:800]}
 XML: {xml_content[:2000]}
 """
     msg = client.messages.create(
@@ -104,15 +130,16 @@ XML: {xml_content[:2000]}
             'role': 'user',
             'content': f"""{COMPANY_PROFILE}
 
-Analyze this tender. Respond ONLY:
+Analyze this tender carefully against the REJECT and ACCEPT criteria above.
+Respond ONLY in this exact format:
 DECISION: YES or NO
-REASON: (one sentence)
-VALUE: (EUR or UNKNOWN)
-COUNTRY: (country)
-TITLE: (title)
+REASON: (one sentence explaining the key reason)
+VALUE: (EUR amount or UNKNOWN)
+COUNTRY: (country name)
+TITLE: (short tender title)
 URL: {url}
 
-Tender:
+Tender data:
 {content}"""
         }]
     )
@@ -157,9 +184,10 @@ def main():
                 'reason': next((l.replace('REASON:', '').strip() for l in lines if l.startswith('REASON:')), 'N/A'),
                 'url': url
             })
-            print(f'  -> TINKA')
+            print(f'  -> TINKA: {ai_response[:80]}')
         else:
-            print(f'  -> Netinka')
+            reason_line = next((l for l in ai_response.split('\n') if l.startswith('REASON:')), '')
+            print(f'  -> Netinka: {reason_line}')
         time.sleep(0.3)
 
     print(f'Tinkamu: {len(yes_results)}')
