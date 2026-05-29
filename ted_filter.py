@@ -40,7 +40,7 @@ REJECT if:
 
 def get_ted_notices():
     query = ' OR '.join([f'PC={code}' for code in CPV_CODES])
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+    yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y%m%d')
     today = datetime.now().strftime('%Y%m%d')
     headers = {
         'Authorization': f'Bearer {TED_API_KEY}',
